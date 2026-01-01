@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ball Expander</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            background: #000;
+            font-family: Arial, sans-serif;
+            position: relative;
+        }
+        #canvas-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <script>
+        // ============================================
+        // BALL EXPANDER - p5.js
+        // ============================================
+        // Simulation Parameters
+        const BOUNDARY_RADIUS = 150;
+        const INITIAL_BALL_RADIUS = 8.25;
+        const BALL_RADIUS = INITIAL_BALL_RADIUS; // Will be overridden by ball instance
+        const CANVAS_SIZE = 800;
+        const CENTER_X = CANVAS_SIZE / 2;
+        const CENTER_Y = CANVAS_SIZE / 2;
+        
+        const BALL_SPEED = 650; // Initial speed in pixels per second
+        const GRAVITY = -30; // Downward acceleration in pixels per second squared
+        const BOUNCE_DAMPING = 0.98; // Bounciness factor (0-1, higher = more bouncy)
+        const BOUNCE_ANGLE_VARIANCE = 15 * (Math.PI / 180); // 15 degrees in radians for bounce randomness
+        
+        // Color cycle for ball
+        const BALL_COLOR_CYCLE_MIN = 2.5;
+        const BALL_COLOR_CYCLE_MAX = 3.0;
+        
+        // Global state
+        let ball = null;
+        let lastFrameTime = 0;
+        let isRunning = false;
+        
+        // Button state
+        const BUTTON_X = CENTER_X;
+        const BUTTON_Y = CENTER_Y - 70;
+        const BUTTON_WIDTH = 120;
+        const BUTTON_HEIGHT = 50;
+        let buttonHovered = false;
+        
+        // Audio context for sound effects
+        let audioContext = null;
+        
+        // Initialize audio context (lazy initialization)
+        function initAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                // Resume audio context if suspended (required by some browsers)
+                if (audioContext.state === 'suspended') {
+                    audioContext.resume();
+                }
+            }
+            return audioContext;
+        }
+        
+        // Play a marble striking glass sound
+        function playCollisionSound(pitch = 1.0, isBoundary = false) {
+            try {
+                const ctx = initAudioContext();
+                
+                // Resume audio context if suspended (required for immediate playback)
+                if (ctx.state === 'suspended') {
+                    ctx.resume();
+                }
+                
+                const oscillator = ctx.createOscillator();
+                const gainNode = ctx.createGain();
+                
+                // Connect oscillator to gain node to output
+                oscillator.connect(gainNode);
+                gainNode.connect(ctx.destination);
+                
+                // Use sine wave for lighter, softer sound
+                oscillator.type = 'sine';
+                
+                // Base frequency for boundary hits (higher pitch for lighter sound)
+                // Higher frequency for ball-to-ball hits (varies by pitch parameter)
+                const baseFreq = isBoundary ? 600 : 750 * pitch; // Boundary: 600Hz, Ball-to-ball: 750Hz base
+                oscillator.frequency.value = baseFreq; // Set frequency immediately
+                
+                // Create instant attack and decay envelope for a lighter "plink" sound (no delay)
+                const now = ctx.currentTime;
+                gainNode.gain.setValueAtTime(0.25, now); // Softer volume, instant attack
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.12); // Slightly faster decay for crispness
+                
+                // Start and stop the oscillator immediately
+                oscillator.start(now);
+                oscillator.stop(now + 0.12); // Match decay duration
+            } catch (e) {
+                // Silently fail if audio context can't be created (e.g., user interaction required)
+                console.log('Audio not available:', e);
+            }
+        }
+        
+        // Play bounce sound effect (wrapper for boundary collisions)
+        function playBounceSound() {
+            // Add some pitch variability for each bounce
+            const pitchVariation = 0.9 + Math.random() * 0.2; // Vary between 0.9 and 1.1
+            playCollisionSound(pitchVariation, true);
+        }
+        
+        // Ball class
+        class Ball {
+            constructor(spawnX, spawnY) {
+                this.x = spawnX;
+                this.y = spawnY;
+                
+                // Ball radius starts at half size and grows on collisions
+                this.radius = INITIAL_BALL_RADIUS * 0.5;
+                
+                // Initial velocity: constant speed in random direction
+                const randomAngle = Math.random() * Math.PI * 2;
+                this.vx = Math.cos(randomAngle) * BALL_SPEED;
+                this.vy = Math.sin(randomAngle) * BALL_SPEED;
+                
+                // Ball state
+                this.ballColorTimer = 0;
+                this.ballColorCycleDuration = BALL_COLOR_CYCLE_MIN + Math.random() * (BALL_COLOR_CYCLE_MAX - BALL_COLOR_CYCLE_MIN);
+                
+                // Trail for ball movement
+                this.trail = [];
+                this.trailMaxLength = 20;
+                this.trailDuration = 0.5;
+                
+                // Lines attached from collision points
+                this.collisionLines = [];
+                
+                // Bounce counter
+                this.bounceCount = 0;
+            }
+            
+            update(deltaTime) {
+                // Cap deltaTime to prevent huge jumps
+                deltaTime = Math.min(deltaTime, 1/30);
+                
+                // Update ball's color timer
+                this.ballColorTimer = (this.ballColorTimer + deltaTime) % this.ballColorCycleDuration;
+                
+                // Update trail
+                for (let i = 0; i < this.trail.length; i++) {
+                    this.trail[i].age += deltaTime;
+                }
+                
+                this.trail.push({x: this.x, y: this.y, age: 0});
+                this.trail = this.trail.filter(point => point.age <= this.trailDuration);
+                
+                if (this.trail.length > this.trailMaxLength) {
+                    this.trail.shift();
+                }
+                
+                // Apply gravity
+                this.vy += GRAVITY * deltaTime;
+                
+                // Update position
+                this.x += this.vx * deltaTime;
+                this.y += this.vy * deltaTime;
+                
+                // Check collision with circle boundary
+                const dx = this.x - CENTER_X;
+                const dy = this.y - CENTER_Y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const angle = Math.atan2(dy, dx);
+                
+                const effectiveRadius = BOUNDARY_RADIUS - this.radius;
+                
+                // Check if ball is outside boundary
+                if (distance > effectiveRadius) {
+                    // Collision occurred - bouncy elastic bounce
+                    const normalX = Math.cos(angle);
+                    const normalY = Math.sin(angle);
+                    
+                    // Store collision point on boundary for line attachment (before growth)
+                    const collisionX = CENTER_X + normalX * BOUNDARY_RADIUS;
+                    const collisionY = CENTER_Y + normalY * BOUNDARY_RADIUS;
+                    this.collisionLines.push({
+                        startX: collisionX,
+                        startY: collisionY
+                    });
+                    
+                    // Increment bounce counter
+                    this.bounceCount++;
+                    
+                    // Play bounce sound
+                    playBounceSound();
+                    
+                    // Grow ball by 1.05x
+                    this.radius *= 1.05;
+                    
+                    // Recalculate effective radius after growth
+                    const newEffectiveRadius = BOUNDARY_RADIUS - this.radius;
+                    
+                    // Ensure ball stays inside boundary
+                    if (newEffectiveRadius > 0) {
+                        // Push ball back inside boundary
+                        this.x = CENTER_X + normalX * newEffectiveRadius;
+                        this.y = CENTER_Y + normalY * newEffectiveRadius;
+                    } else {
+                        // Ball is too big, keep it at the boundary
+                        this.x = CENTER_X + normalX * (BOUNDARY_RADIUS - 0.1);
+                        this.y = CENTER_Y + normalY * (BOUNDARY_RADIUS - 0.1);
+                    }
+                    
+                    // Reflect velocity vector (no damping)
+                    const dot = this.vx * normalX + this.vy * normalY;
+                    this.vx = this.vx - 2 * dot * normalX;
+                    this.vy = this.vy - 2 * dot * normalY;
+                    
+                    // Add random angle variation (±15 degrees)
+                    const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (currentSpeed > 0) {
+                        const currentAngle = Math.atan2(this.vy, this.vx);
+                        const randomVariation = (Math.random() * 2 - 1) * BOUNCE_ANGLE_VARIANCE;
+                        const newAngle = currentAngle + randomVariation;
+                        this.vx = Math.cos(newAngle) * currentSpeed;
+                        this.vy = Math.sin(newAngle) * currentSpeed;
+                    }
+                }
+            }
+            
+            // Get color based on ball's timer
+            getBallColor() {
+                const normalizedTime = this.ballColorTimer / this.ballColorCycleDuration;
+                
+                let red, green, blue;
+                
+                if (normalizedTime < 1/3) {
+                    const progress = normalizedTime * 3;
+                    red = Math.floor(255 * (1 - progress));
+                    green = Math.floor(255 * progress);
+                    blue = 0;
+                } else if (normalizedTime < 2/3) {
+                    const progress = (normalizedTime - 1/3) * 3;
+                    red = 0;
+                    green = Math.floor(255 * (1 - progress));
+                    blue = Math.floor(255 * progress);
+                } else {
+                    const progress = (normalizedTime - 2/3) * 3;
+                    red = Math.floor(255 * progress);
+                    green = 0;
+                    blue = Math.floor(255 * (1 - progress));
+                }
+                
+                red = Math.min(255, Math.floor(red * 1.15));
+                green = Math.min(255, Math.floor(green * 1.15));
+                blue = Math.min(255, Math.floor(blue * 1.15));
+                
+                return [red, green, blue];
+            }
+            
+            draw() {
+                const color = this.getBallColor();
+                
+                // Draw collision lines (thin lines from collision points to ball)
+                if (this.collisionLines.length > 0) {
+                    stroke(color[0], color[1], color[2], 180);
+                    strokeWeight(1);
+                    for (let i = 0; i < this.collisionLines.length; i++) {
+                        const lineData = this.collisionLines[i];
+                        // Draw line from collision point on boundary to current ball position
+                        line(lineData.startX, lineData.startY, this.x, this.y);
+                    }
+                }
+                
+                // Draw trail
+                if (this.trail.length > 1) {
+                    noStroke();
+                    for (let i = 0; i < this.trail.length - 1; i++) {
+                        const point = this.trail[i];
+                        const ageRatio = point.age / this.trailDuration;
+                        const alpha = Math.max(0, 255 * (1 - ageRatio));
+                        fill(color[0], color[1], color[2], alpha * 0.6);
+                        const trailSize = this.radius * 2 * (1 - ageRatio);
+                        ellipse(point.x, point.y, trailSize, trailSize);
+                    }
+                }
+                
+                // Draw glass-like ball
+                noStroke();
+                
+                // Outer glow
+                fill(color[0], color[1], color[2], 40);
+                ellipse(this.x, this.y, this.radius * 2 + 4, this.radius * 2 + 4);
+                
+                // Middle glow
+                fill(color[0], color[1], color[2], 80);
+                ellipse(this.x, this.y, this.radius * 2 + 2, this.radius * 2 + 2);
+                
+                // Main ball body
+                fill(color[0], color[1], color[2], 200);
+                ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
+                
+                // Outer stroke
+                noFill();
+                stroke(color[0], color[1], color[2], 220);
+                strokeWeight(2);
+                ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
+                
+                // Inner highlight
+                fill(255, 255, 255, 120);
+                noStroke();
+                ellipse(this.x - this.radius * 0.3, this.y - this.radius * 0.3, this.radius * 0.8, this.radius * 0.8);
+                
+                // Inner stroke
+                noFill();
+                stroke(255, 255, 255, 200);
+                strokeWeight(1);
+                ellipse(this.x, this.y, this.radius * 2 - 2, this.radius * 2 - 2);
+            }
+        }
+        
+        // Setup function
+        function setup() {
+            const canvas = createCanvas(CANVAS_SIZE, CANVAS_SIZE);
+            canvas.parent('canvas-container');
+            background(0);
+            lastFrameTime = millis();
+            
+            // Create ball at center (but don't start yet)
+            ball = new Ball(CENTER_X, CENTER_Y);
+        }
+        
+        // Draw function
+        function draw() {
+            // Clear canvas
+            background(0);
+            
+            // Draw circle boundary (no gap)
+            drawBoundary();
+            
+            // Draw caption (always visible)
+            drawCaption();
+            
+            // Draw button only if not running
+            if (!isRunning) {
+                drawButton();
+            }
+            
+            // Draw bounce counter
+            if (ball) {
+                drawBounceCounter();
+            }
+            
+            // Only update ball if running
+            if (isRunning && ball) {
+                // Calculate delta time
+                const currentTime = millis();
+                const deltaTime = (currentTime - lastFrameTime) / 1000.0;
+                lastFrameTime = currentTime;
+                
+                ball.update(deltaTime);
+                ball.draw();
+            } else if (ball) {
+                // Draw ball in starting position
+                ball.draw();
+            }
+        }
+        
+        // Draw caption
+        function drawCaption() {
+            textAlign(CENTER, CENTER);
+            textSize(24);
+            fill(255);
+            noStroke();
+            text("The ball gets bigger", CENTER_X, CENTER_Y - 230);
+            text("Until my phone crashes 💀", CENTER_X, CENTER_Y - 200);
+        }
+        
+        // Draw bounce counter
+        function drawBounceCounter() {
+            textAlign(CENTER, CENTER);
+            textSize(20);
+            fill(255);
+            noStroke();
+            const bounceText = "Bounces: " + (ball ? ball.bounceCount : 0);
+            text(bounceText, CENTER_X, CENTER_Y + 200);
+        }
+        
+        // Draw start button
+        function drawButton() {
+            // Check if mouse is over button
+            const mouseX_canvas = mouseX;
+            const mouseY_canvas = mouseY;
+            buttonHovered = (
+                mouseX_canvas > BUTTON_X - BUTTON_WIDTH / 2 &&
+                mouseX_canvas < BUTTON_X + BUTTON_WIDTH / 2 &&
+                mouseY_canvas > BUTTON_Y - BUTTON_HEIGHT / 2 &&
+                mouseY_canvas < BUTTON_Y + BUTTON_HEIGHT / 2
+            );
+            
+            // Draw button
+            noStroke();
+            
+            // Button shadow/glow
+            if (buttonHovered) {
+                fill(102, 126, 234, 60);
+                ellipse(BUTTON_X, BUTTON_Y + 2, BUTTON_WIDTH + 4, BUTTON_HEIGHT + 4);
+            }
+            
+            // Button gradient effect (simulated)
+            fill(102, 126, 234);
+            rect(BUTTON_X - BUTTON_WIDTH / 2, BUTTON_Y - BUTTON_HEIGHT / 2, BUTTON_WIDTH, BUTTON_HEIGHT, 25);
+            
+            // Button highlight
+            fill(118, 75, 162);
+            rect(BUTTON_X - BUTTON_WIDTH / 2, BUTTON_Y - BUTTON_HEIGHT / 2, BUTTON_WIDTH, BUTTON_HEIGHT / 2, 25, 25, 0, 0);
+            
+            // Button text
+            textAlign(CENTER, CENTER);
+            textSize(18);
+            fill(255);
+            textStyle(BOLD);
+            text("Start", BUTTON_X, BUTTON_Y);
+            textStyle(NORMAL);
+        }
+        
+        // Handle mouse clicks
+        function mousePressed() {
+            // Initialize audio on first user interaction
+            initAudioContext();
+            
+            if (!isRunning) {
+                const mouseX_canvas = mouseX;
+                const mouseY_canvas = mouseY;
+                
+                // Check if button was clicked
+                if (
+                    mouseX_canvas > BUTTON_X - BUTTON_WIDTH / 2 &&
+                    mouseX_canvas < BUTTON_X + BUTTON_WIDTH / 2 &&
+                    mouseY_canvas > BUTTON_Y - BUTTON_HEIGHT / 2 &&
+                    mouseY_canvas < BUTTON_Y + BUTTON_HEIGHT / 2
+                ) {
+                    isRunning = true;
+                    // Reset ball
+                    ball = new Ball(CENTER_X, CENTER_Y);
+                    lastFrameTime = millis();
+                }
+            }
+        }
+        
+        // Draw the boundary circle (no gap)
+        function drawBoundary() {
+            const centerX = CANVAS_SIZE / 2;
+            const centerY = CANVAS_SIZE / 2;
+            
+            // Color cycling
+            const colorTimer = (millis() / 1000.0) % 5.0;
+            const normalizedTime = colorTimer / 5.0;
+            
+            let red, green, blue;
+            if (normalizedTime < 1/3) {
+                const progress = normalizedTime * 3;
+                red = Math.floor(255 * (1 - progress));
+                green = Math.floor(255 * progress);
+                blue = 0;
+            } else if (normalizedTime < 2/3) {
+                const progress = (normalizedTime - 1/3) * 3;
+                red = 0;
+                green = Math.floor(255 * (1 - progress));
+                blue = Math.floor(255 * progress);
+            } else {
+                const progress = (normalizedTime - 2/3) * 3;
+                red = Math.floor(255 * progress);
+                green = 0;
+                blue = Math.floor(255 * (1 - progress));
+            }
+            
+            red = Math.min(255, Math.floor(red * 1.15));
+            green = Math.min(255, Math.floor(green * 1.15));
+            blue = Math.min(255, Math.floor(blue * 1.15));
+            
+            const boundaryColor = [red, green, blue];
+            
+            // Draw complete circle with glass-like effect
+            noFill();
+            
+            // Outer glow layer
+            stroke(boundaryColor[0], boundaryColor[1], boundaryColor[2], 60);
+            strokeWeight(10);
+            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 + 2, BOUNDARY_RADIUS * 2 + 2);
+            
+            // Middle glow layer
+            stroke(boundaryColor[0], boundaryColor[1], boundaryColor[2], 100);
+            strokeWeight(7);
+            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 + 1, BOUNDARY_RADIUS * 2 + 1);
+            
+            // Main stroke
+            stroke(boundaryColor[0], boundaryColor[1], boundaryColor[2], 220);
+            strokeWeight(5);
+            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2, BOUNDARY_RADIUS * 2);
+            
+            // Inner highlight
+            stroke(255, 255, 255, 180);
+            strokeWeight(2);
+            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 - 2, BOUNDARY_RADIUS * 2 - 2);
+            
+            // Inner glow
+            stroke(boundaryColor[0], boundaryColor[1], boundaryColor[2], 80);
+            strokeWeight(3);
+            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 - 1, BOUNDARY_RADIUS * 2 - 1);
+        }
+    </script>
+</body>
+</html>
+
