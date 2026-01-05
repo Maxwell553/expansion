@@ -23,10 +23,39 @@
             justify-content: center;
             align-items: center;
         }
+        #canvas-container {
+            position: relative;
+        }
+        .caption-input {
+            position: absolute;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.7);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 24px;
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 5px 10px;
+            width: 400px;
+            z-index: 10;
+        }
+        .caption-input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.6);
+        }
+        #caption-line1 {
+            top: calc(50vh - 230px);
+        }
+        #caption-line2 {
+            top: calc(50vh - 200px);
+        }
     </style>
 </head>
 <body>
     <div id="canvas-container"></div>
+    <input type="text" id="caption-line1" class="caption-input" value="The ball gets bigger" />
+    <input type="text" id="caption-line2" class="caption-input" value="Until my phone crashes 💀" />
     <script>
         // ============================================
         // BALL EXPANDER - p5.js
@@ -53,6 +82,10 @@
         let lastFrameTime = 0;
         let isRunning = false;
         let explosions = []; // Array to store active explosions
+        
+        // Caption input elements
+        let captionInput1 = null;
+        let captionInput2 = null;
         
         // Button state
         const BUTTON_X = CENTER_X;
@@ -443,6 +476,10 @@
             
             // Create ball at center (but don't start yet)
             ball = new Ball(CENTER_X, CENTER_Y);
+            
+            // Initialize caption inputs
+            captionInput1 = document.getElementById('caption-line1');
+            captionInput2 = document.getElementById('caption-line2');
         }
         
         // Draw function
@@ -452,6 +489,17 @@
             
             // Draw circle boundary (no gap)
             drawBoundary();
+            
+            // Show/hide caption inputs based on running state
+            if (captionInput1 && captionInput2) {
+                if (isRunning) {
+                    captionInput1.style.display = 'none';
+                    captionInput2.style.display = 'none';
+                } else {
+                    captionInput1.style.display = 'block';
+                    captionInput2.style.display = 'block';
+                }
+            }
             
             // Draw caption (always visible)
             drawCaption();
@@ -496,8 +544,13 @@
             textSize(24);
             fill(255);
             noStroke();
-            text("The ball gets bigger", CENTER_X, CENTER_Y - 230);
-            text("Until my phone crashes 💀", CENTER_X, CENTER_Y - 200);
+            
+            // Get caption text from inputs if available, otherwise use defaults
+            const line1 = (captionInput1 && captionInput1.value) ? captionInput1.value : "The ball gets bigger";
+            const line2 = (captionInput2 && captionInput2.value) ? captionInput2.value : "Until my phone crashes 💀";
+            
+            text(line1, CENTER_X, CENTER_Y - 230);
+            text(line2, CENTER_X, CENTER_Y - 200);
         }
         
         // Draw bounce counter
