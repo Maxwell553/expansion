@@ -39,10 +39,10 @@
         const CENTER_X = CANVAS_SIZE / 2;
         const CENTER_Y = CANVAS_SIZE / 2;
         
-        const BALL_SPEED = 500; // Initial speed in pixels per second
-        const GRAVITY = -30; // Downward acceleration in pixels per second squared
-        const BOUNCE_DAMPING = 0.98; // Bounciness factor (0-1, higher = more bouncy)
-        const BOUNCE_ANGLE_VARIANCE = 15 * (Math.PI / 180); // 15 degrees in radians for bounce randomness
+        const BALL_SPEED = 500; // Constant speed in pixels per second (maintained regardless of size)
+        const GRAVITY = 1470; // Downward acceleration in pixels per second squared (50% stronger than before)
+        const BOUNCE_DAMPING = 0.95; // Bounciness factor (0-1, higher = more bouncy)
+        const BOUNCE_ANGLE_VARIANCE = 20 * (Math.PI / 180); // 20 degrees in radians for bounce randomness
         
         // Color cycle for ball
         const BALL_COLOR_CYCLE_MIN = 2.5;
@@ -75,8 +75,8 @@
             return audioContext;
         }
         
-        // Play a marble striking glass sound
-        function playCollisionSound(pitch = 1.0, isBoundary = false) {
+        // Play a clear glass-like sound that starts low and goes higher
+        function playCollisionSound(pitch = 1.0, isBoundary = false, bounceCount = 0) {
             try {
                 const ctx = initAudioContext();
                 
@@ -92,22 +92,25 @@
                 oscillator.connect(gainNode);
                 gainNode.connect(ctx.destination);
                 
-                // Use sine wave for lighter, softer sound
+                // Use sine wave for clear, glass-like sound
                 oscillator.type = 'sine';
                 
-                // Base frequency for boundary hits (higher pitch for lighter sound)
-                // Higher frequency for ball-to-ball hits (varies by pitch parameter)
-                const baseFreq = isBoundary ? 600 : 750 * pitch; // Boundary: 600Hz, Ball-to-ball: 750Hz base
-                oscillator.frequency.value = baseFreq; // Set frequency immediately
+                // Linear progression: start at 100 Hz, increase by 6 Hz per bounce
+                const startFreq = 100;
+                const freqIncrease = 6;
+                const frequency = startFreq + (bounceCount * freqIncrease);
                 
-                // Create instant attack and decay envelope for a lighter "plink" sound (no delay)
+                oscillator.frequency.value = frequency;
+                
+                // Clean, crisp envelope for glass-like sound
                 const now = ctx.currentTime;
-                gainNode.gain.setValueAtTime(0.25, now); // Softer volume, instant attack
-                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.12); // Slightly faster decay for crispness
+                gainNode.gain.setValueAtTime(0.3, now); // Clear attack
+                gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15); // Smooth decay
                 
-                // Start and stop the oscillator immediately
+                // Start and stop the oscillator
                 oscillator.start(now);
-                oscillator.stop(now + 0.12); // Match decay duration
+                oscillator.stop(now + 0.15);
+                
             } catch (e) {
                 // Silently fail if audio context can't be created (e.g., user interaction required)
                 console.log('Audio not available:', e);
@@ -115,10 +118,8 @@
         }
         
         // Play bounce sound effect (wrapper for boundary collisions)
-        function playBounceSound() {
-            // Add some pitch variability for each bounce
-            const pitchVariation = 0.9 + Math.random() * 0.2; // Vary between 0.9 and 1.1
-            playCollisionSound(pitchVariation, true);
+        function playBounceSound(bounceCount = 0) {
+            playCollisionSound(1.0, true, bounceCount);
         }
         
         // Ball class
@@ -127,12 +128,16 @@
                 this.x = spawnX;
                 this.y = spawnY;
                 
+                // Store starting Y position to prevent bouncing above it
+                this.startY = spawnY;
+                
                 // Ball radius starts at half size and grows on collisions
                 this.radius = INITIAL_BALL_RADIUS * 0.5;
                 
-                // Initial velocity: drop straight down
-                this.vx = 0;
-                this.vy = BALL_SPEED;
+                // Initial velocity: drop at 20 degrees to the right
+                const dropAngle = 20 * (Math.PI / 180); // 20 degrees in radians
+                this.vx = BALL_SPEED * Math.sin(dropAngle); // Rightward component
+                this.vy = BALL_SPEED * Math.cos(dropAngle); // Downward component
                 
                 // Ball state
                 this.ballColorTimer = 0;
@@ -148,6 +153,9 @@
                 
                 // Bounce counter
                 this.bounceCount = 0;
+                
+                // Speed multiplier increases by 0.5% with each bounce
+                this.speedMultiplier = 1.0;
             }
             
             update(deltaTime) {
@@ -169,19 +177,15 @@
                     this.trail.shift();
                 }
                 
-                // Apply gravity (pulls downward but maintain constant speed)
+                // Maintain constant speed regardless of ball size
+                // Speed increases by 0.5% with each bounce
+                const targetSpeed = BALL_SPEED * this.speedMultiplier;
                 const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
                 if (currentSpeed > 0) {
-                    // Apply gravity to change velocity direction (pulls downward)
-                    this.vy += GRAVITY * deltaTime;
-                    
-                    // Normalize velocity to maintain constant speed
-                    const newSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-                    if (newSpeed > 0) {
-                        const speedRatio = currentSpeed / newSpeed;
-                        this.vx *= speedRatio;
-                        this.vy *= speedRatio;
-                    }
+                    // Normalize velocity to maintain constant speed magnitude
+                    const speedRatio = targetSpeed / currentSpeed;
+                    this.vx *= speedRatio;
+                    this.vy *= speedRatio;
                 }
                 
                 // Update position
@@ -213,11 +217,14 @@
                     // Increment bounce counter
                     this.bounceCount++;
                     
-                    // Play bounce sound
-                    playBounceSound();
+                    // Increase speed by 0.5% with each bounce
+                    this.speedMultiplier *= 1.005;
                     
-                    // Grow ball by 1.03x
-                    this.radius *= 1.03;
+                    // Play bounce sound with melodic variation based on bounce count
+                    playBounceSound(this.bounceCount);
+                    
+                    // Grow ball by 1.05x (5%)
+                    this.radius *= 1.05;
                     
                     // Recalculate effective radius after growth
                     const newEffectiveRadius = BOUNDARY_RADIUS - this.radius;
@@ -233,12 +240,12 @@
                         this.y = CENTER_Y + normalY * (BOUNDARY_RADIUS - 0.1);
                     }
                     
-                    // Reflect velocity vector (no damping)
+                    // Reflect velocity vector
                     const dot = this.vx * normalX + this.vy * normalY;
                     this.vx = this.vx - 2 * dot * normalX;
                     this.vy = this.vy - 2 * dot * normalY;
                     
-                    // Add random angle variation (±15 degrees)
+                    // Add random angle variation (±20 degrees)
                     const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
                     if (currentSpeed > 0) {
                         const currentAngle = Math.atan2(this.vy, this.vx);
@@ -246,6 +253,16 @@
                         const newAngle = currentAngle + randomVariation;
                         this.vx = Math.cos(newAngle) * currentSpeed;
                         this.vy = Math.sin(newAngle) * currentSpeed;
+                    }
+                    
+                    // Maintain constant speed after bounce
+                    // Speed increases by 0.5% with each bounce
+                    const targetSpeed = BALL_SPEED * this.speedMultiplier;
+                    const postBounceSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+                    if (postBounceSpeed > 0) {
+                        const speedRatio = targetSpeed / postBounceSpeed;
+                        this.vx *= speedRatio;
+                        this.vy *= speedRatio;
                     }
                 }
             }
