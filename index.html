@@ -39,19 +39,20 @@
         const CENTER_X = CANVAS_SIZE / 2;
         const CENTER_Y = CANVAS_SIZE / 2;
         
-        const BALL_SPEED = 500; // Constant speed in pixels per second (maintained regardless of size)
+        const BALL_SPEED = 550; // Constant speed in pixels per second (maintained regardless of size)
         const GRAVITY = 1470; // Downward acceleration in pixels per second squared (50% stronger than before)
         const BOUNCE_DAMPING = 0.95; // Bounciness factor (0-1, higher = more bouncy)
         const BOUNCE_ANGLE_VARIANCE = 20 * (Math.PI / 180); // 20 degrees in radians for bounce randomness
         
-        // Color cycle for ball
-        const BALL_COLOR_CYCLE_MIN = 2.5;
-        const BALL_COLOR_CYCLE_MAX = 3.0;
+        // Color cycle for ball (30% slower)
+        const BALL_COLOR_CYCLE_MIN = 3.25;
+        const BALL_COLOR_CYCLE_MAX = 3.9;
         
         // Global state
         let ball = null;
         let lastFrameTime = 0;
         let isRunning = false;
+        let explosions = []; // Array to store active explosions
         
         // Button state
         const BUTTON_X = CENTER_X;
@@ -95,16 +96,16 @@
                 // Use sine wave for clear, glass-like sound
                 oscillator.type = 'sine';
                 
-                // Linear progression: start at 100 Hz, increase by 6 Hz per bounce
-                const startFreq = 100;
-                const freqIncrease = 6;
+                // Linear progression: start at 200 Hz, increase by 3 Hz per bounce
+                const startFreq = 200;
+                const freqIncrease = 3;
                 const frequency = startFreq + (bounceCount * freqIncrease);
                 
                 oscillator.frequency.value = frequency;
                 
-                // Clean, crisp envelope for glass-like sound
+                // Clean, crisp envelope for glass-like sound (maximum volume)
                 const now = ctx.currentTime;
-                gainNode.gain.setValueAtTime(0.3, now); // Clear attack
+                gainNode.gain.setValueAtTime(1.0, now); // Maximum volume
                 gainNode.gain.exponentialRampToValueAtTime(0.01, now + 0.15); // Smooth decay
                 
                 // Start and stop the oscillator
@@ -122,6 +123,91 @@
             playCollisionSound(1.0, true, bounceCount);
         }
         
+        // Explosion class for collision effects
+        class Explosion {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.age = 0;
+                this.duration = 0.5; // Duration in seconds (longer for visibility)
+                this.maxSize = 41; // 20% bigger than before (34 * 1.2)
+                this.particles = [];
+                
+                // Create particles for explosion (20% bigger)
+                const particleCount = 24;
+                for (let i = 0; i < particleCount; i++) {
+                    const angle = (Math.PI * 2 * i) / particleCount;
+                    const speed = 48 + Math.random() * 60; // 20% faster particles
+                    this.particles.push({
+                        x: x,
+                        y: y,
+                        vx: Math.cos(angle) * speed,
+                        vy: Math.sin(angle) * speed,
+                        size: 4 + Math.random() * 5, // 20% bigger particles
+                        life: 1.0
+                    });
+                }
+            }
+            
+            update(deltaTime) {
+                this.age += deltaTime;
+                
+                // Update particles
+                for (let i = 0; i < this.particles.length; i++) {
+                    const p = this.particles[i];
+                    p.x += p.vx * deltaTime;
+                    p.y += p.vy * deltaTime;
+                    p.vx *= 0.95; // Friction
+                    p.vy *= 0.95;
+                    p.life -= deltaTime / this.duration;
+                }
+            }
+            
+            draw() {
+                const progress = this.age / this.duration;
+                if (progress >= 1) return;
+                
+                const alpha = 255 * (1 - progress);
+                
+                // Draw particles (more vibrant)
+                noStroke();
+                for (let i = 0; i < this.particles.length; i++) {
+                    const p = this.particles[i];
+                    if (p.life > 0) {
+                        const particleAlpha = alpha * p.life; // Full brightness
+                        // Much brighter colors for more vibrancy
+                        const brightColor = [
+                            Math.min(255, Math.floor(this.color[0] * 1.8)),
+                            Math.min(255, Math.floor(this.color[1] * 1.8)),
+                            Math.min(255, Math.floor(this.color[2] * 1.8))
+                        ];
+                        fill(brightColor[0], brightColor[1], brightColor[2], particleAlpha);
+                        ellipse(p.x, p.y, p.size * p.life, p.size * p.life);
+                    }
+                }
+                
+                // Draw central burst (smaller but more vibrant)
+                const burstSize = this.maxSize * progress;
+                // Much brighter colors for maximum vibrancy
+                const brightColor = [
+                    Math.min(255, Math.floor(this.color[0] * 2.0)),
+                    Math.min(255, Math.floor(this.color[1] * 2.0)),
+                    Math.min(255, Math.floor(this.color[2] * 2.0))
+                ];
+                fill(brightColor[0], brightColor[1], brightColor[2], alpha * 0.9); // Very opaque
+                ellipse(this.x, this.y, burstSize, burstSize);
+                
+                // Add outer glow for extra visibility (20% bigger)
+                fill(brightColor[0], brightColor[1], brightColor[2], alpha * 0.5);
+                ellipse(this.x, this.y, burstSize * 1.4, burstSize * 1.4);
+            }
+            
+            isDead() {
+                return this.age >= this.duration;
+            }
+        }
+        
         // Ball class
         class Ball {
             constructor(spawnX, spawnY) {
@@ -131,8 +217,8 @@
                 // Store starting Y position to prevent bouncing above it
                 this.startY = spawnY;
                 
-                // Ball radius starts at half size and grows on collisions
-                this.radius = INITIAL_BALL_RADIUS * 0.5;
+                // Ball radius starts at 30% size (70% less) and grows on collisions
+                this.radius = INITIAL_BALL_RADIUS * 0.3;
                 
                 // Initial velocity: drop at 20 degrees to the right
                 const dropAngle = 20 * (Math.PI / 180); // 20 degrees in radians
@@ -143,10 +229,6 @@
                 this.ballColorTimer = 0;
                 this.ballColorCycleDuration = BALL_COLOR_CYCLE_MIN + Math.random() * (BALL_COLOR_CYCLE_MAX - BALL_COLOR_CYCLE_MIN);
                 
-                // Trail for ball movement
-                this.trail = [];
-                this.trailMaxLength = 20;
-                this.trailDuration = 0.5;
                 
                 // Lines attached from collision points
                 this.collisionLines = [];
@@ -164,18 +246,6 @@
                 
                 // Update ball's color timer
                 this.ballColorTimer = (this.ballColorTimer + deltaTime) % this.ballColorCycleDuration;
-                
-                // Update trail
-                for (let i = 0; i < this.trail.length; i++) {
-                    this.trail[i].age += deltaTime;
-                }
-                
-                this.trail.push({x: this.x, y: this.y, age: 0});
-                this.trail = this.trail.filter(point => point.age <= this.trailDuration);
-                
-                if (this.trail.length > this.trailMaxLength) {
-                    this.trail.shift();
-                }
                 
                 // Maintain constant speed regardless of ball size
                 // Speed increases by 0.5% with each bounce
@@ -213,6 +283,10 @@
                         startX: collisionX,
                         startY: collisionY
                     });
+                    
+                    // Create explosion at collision point
+                    const ballColor = this.getBallColor();
+                    explosions.push(new Explosion(collisionX, collisionY, ballColor));
                     
                     // Increment bounce counter
                     this.bounceCount++;
@@ -267,25 +341,39 @@
                 }
             }
             
-            // Get color based on ball's timer
+            // Get color based on ball's timer (with cyan and dark purple)
             getBallColor() {
                 const normalizedTime = this.ballColorTimer / this.ballColorCycleDuration;
                 
                 let red, green, blue;
                 
-                if (normalizedTime < 1/3) {
-                    const progress = normalizedTime * 3;
+                // 5-color cycle: red -> green -> blue -> cyan -> dark purple -> red
+                if (normalizedTime < 1/5) {
+                    const progress = normalizedTime * 5;
                     red = Math.floor(255 * (1 - progress));
                     green = Math.floor(255 * progress);
                     blue = 0;
-                } else if (normalizedTime < 2/3) {
-                    const progress = (normalizedTime - 1/3) * 3;
+                } else if (normalizedTime < 2/5) {
+                    const progress = (normalizedTime - 1/5) * 5;
                     red = 0;
                     green = Math.floor(255 * (1 - progress));
                     blue = Math.floor(255 * progress);
+                } else if (normalizedTime < 3/5) {
+                    // Blue to cyan: blue stays max, green increases
+                    const progress = (normalizedTime - 2/5) * 5;
+                    red = 0;
+                    green = Math.floor(255 * progress);
+                    blue = 255; // Full blue
+                } else if (normalizedTime < 4/5) {
+                    // Cyan to dark purple: green decreases, red increases, blue stays
+                    const progress = (normalizedTime - 3/5) * 5;
+                    red = Math.floor(128 * progress); // Dark purple red component
+                    green = Math.floor(255 * (1 - progress));
+                    blue = 255; // Full blue
                 } else {
-                    const progress = (normalizedTime - 2/3) * 3;
-                    red = Math.floor(255 * progress);
+                    // Dark purple back to red: blue decreases, red increases
+                    const progress = (normalizedTime - 4/5) * 5;
+                    red = Math.floor(128 + (127 * progress)); // From 128 to 255
                     green = 0;
                     blue = Math.floor(255 * (1 - progress));
                 }
@@ -317,19 +405,6 @@
                     }
                 }
                 
-                // Draw trail
-                if (this.trail.length > 1) {
-                    noStroke();
-                    for (let i = 0; i < this.trail.length - 1; i++) {
-                        const point = this.trail[i];
-                        const ageRatio = point.age / this.trailDuration;
-                        const alpha = Math.max(0, 255 * (1 - ageRatio));
-                        fill(color[0], color[1], color[2], alpha * 0.6);
-                        const trailSize = this.radius * 2 * (1 - ageRatio);
-                        ellipse(point.x, point.y, trailSize, trailSize);
-                    }
-                }
-                
                 // Draw glass-like ball
                 noStroke();
                 
@@ -345,22 +420,17 @@
                 fill(color[0], color[1], color[2], 200);
                 ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
                 
-                // Outer stroke
+                // Outer stroke (colored)
                 noFill();
                 stroke(color[0], color[1], color[2], 220);
                 strokeWeight(2);
                 ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
                 
-                // Inner highlight
-                fill(255, 255, 255, 120);
-                noStroke();
-                ellipse(this.x - this.radius * 0.3, this.y - this.radius * 0.3, this.radius * 0.8, this.radius * 0.8);
-                
-                // Inner stroke
+                // Faint white outline
                 noFill();
-                stroke(255, 255, 255, 200);
+                stroke(255, 255, 255, 220);
                 strokeWeight(1);
-                ellipse(this.x, this.y, this.radius * 2 - 2, this.radius * 2 - 2);
+                ellipse(this.x, this.y, this.radius * 2, this.radius * 2);
             }
         }
         
@@ -405,6 +475,15 @@
                 
                 ball.update(deltaTime);
                 ball.draw();
+                
+                // Update and draw explosions
+                for (let i = explosions.length - 1; i >= 0; i--) {
+                    explosions[i].update(deltaTime);
+                    explosions[i].draw();
+                    if (explosions[i].isDead()) {
+                        explosions.splice(i, 1);
+                    }
+                }
             } else if (ball) {
                 // Draw ball in starting position
                 ball.draw();
@@ -486,8 +565,9 @@
                     mouseY_canvas < BUTTON_Y + BUTTON_HEIGHT / 2
                 ) {
                     isRunning = true;
-                    // Reset ball
+                    // Reset ball and clear explosions
                     ball = new Ball(CENTER_X, CENTER_Y);
+                    explosions = [];
                     lastFrameTime = millis();
                 }
             }
@@ -498,24 +578,39 @@
             const centerX = CANVAS_SIZE / 2;
             const centerY = CANVAS_SIZE / 2;
             
-            // Color cycling
+            // Color cycling (with cyan and dark purple, matching ball)
             const colorTimer = (millis() / 1000.0) % 5.0;
             const normalizedTime = colorTimer / 5.0;
             
             let red, green, blue;
-            if (normalizedTime < 1/3) {
-                const progress = normalizedTime * 3;
+            
+            // 5-color cycle: red -> green -> blue -> cyan -> dark purple -> red
+            if (normalizedTime < 1/5) {
+                const progress = normalizedTime * 5;
                 red = Math.floor(255 * (1 - progress));
                 green = Math.floor(255 * progress);
                 blue = 0;
-            } else if (normalizedTime < 2/3) {
-                const progress = (normalizedTime - 1/3) * 3;
+            } else if (normalizedTime < 2/5) {
+                const progress = (normalizedTime - 1/5) * 5;
                 red = 0;
                 green = Math.floor(255 * (1 - progress));
                 blue = Math.floor(255 * progress);
+            } else if (normalizedTime < 3/5) {
+                // Blue to cyan: blue stays max, green increases
+                const progress = (normalizedTime - 2/5) * 5;
+                red = 0;
+                green = Math.floor(255 * progress);
+                blue = 255; // Full blue
+            } else if (normalizedTime < 4/5) {
+                // Cyan to dark purple: green decreases, red increases, blue stays
+                const progress = (normalizedTime - 3/5) * 5;
+                red = Math.floor(128 * progress); // Dark purple red component
+                green = Math.floor(255 * (1 - progress));
+                blue = 255; // Full blue
             } else {
-                const progress = (normalizedTime - 2/3) * 3;
-                red = Math.floor(255 * progress);
+                // Dark purple back to red: blue decreases, red increases
+                const progress = (normalizedTime - 4/5) * 5;
+                red = Math.floor(128 + (127 * progress)); // From 128 to 255
                 green = 0;
                 blue = Math.floor(255 * (1 - progress));
             }
@@ -526,7 +621,7 @@
             
             const boundaryColor = [red, green, blue];
             
-            // Draw complete circle with glass-like effect
+            // Draw colored circle outline (no white parts)
             noFill();
             
             // Outer glow layer
@@ -544,12 +639,7 @@
             strokeWeight(5);
             ellipse(centerX, centerY, BOUNDARY_RADIUS * 2, BOUNDARY_RADIUS * 2);
             
-            // Inner highlight
-            stroke(255, 255, 255, 180);
-            strokeWeight(2);
-            ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 - 2, BOUNDARY_RADIUS * 2 - 2);
-            
-            // Inner glow
+            // Inner glow (colored, no white highlight)
             stroke(boundaryColor[0], boundaryColor[1], boundaryColor[2], 80);
             strokeWeight(3);
             ellipse(centerX, centerY, BOUNDARY_RADIUS * 2 - 1, BOUNDARY_RADIUS * 2 - 1);
